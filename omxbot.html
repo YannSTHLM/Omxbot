@@ -1,1 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>OMX-Deep-Cheap Bot + Live Table</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="manifest" href="data:application/manifest+json,{"name":"OMX Bot","short_name":"OMXBot","display":"standalone","start_url":"./index.html"}">
+<style>
+  body{font-family:Roboto;margin:0;padding:1rem;background:#111;color:#0f0}
+  table{border-collapse:collapse;margin-top:.5rem;width:100%;max-width:400px}
+  th,td{border:1px solid #0f0;padding:.4rem;text-align:right}
+  th{background:#222}
+  pre{white-space:pre-wrap;font-size:.9rem}
+  button{background:#222;color:#0f0;border:1px solid #0f0;padding:.5rem 1rem}
+</style>
+</head>
+<body>
+<h2>OMX-Deep-Cheap Bot</h2>
+<table id="stats">
+  <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+  <tbody>
+    <tr><td>Negative-days streak</td><td id="streak">-</td></tr>
+    <tr><td>3-y high (SEK)</td><td id="high3y">-</td></tr>
+    <tr><td>Drawdown vs 3-y high</td><td id="dd3y">-</td></tr>
+  </tbody>
+</table>
+<pre id="log">Waiting for 17:30 CET …</pre>
+<button onclick="runBotOnce()">Run now (manual)</button>
 
+<script>
+/* ---------- CONFIG ---------- */
+const TICKER = '^OMX';
+const BUY6   = 200_000, BUY15 = 100_000, BUY25 = 100_000;
+const CASH   = () => 1_000_000;
+const ORDER  = (sek) => alert(`ORDER: buy ETF for ${sek} SEK`);
+
+/* ---------- UTILS ---------- */
+const fmt = (n)=>n?.toFixed(2);
+const todayStr = ()=>new Date().toISOString().slice(0,10);
+
+async function yahoo(ticker){
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=3y`;
+  const r = await fetch(url);
+  const j = await r.json();
+  const {timestamp,indicators:{quote:[q]}} = j.chart.result[0];
+  const closes = q.close.filter(c=>c!==null);
+  const open   = q.open.at(-2);
+  const close  = q.close.at(-1);
+  return {open,close,closes,ts:timestamp.at(-1)};
+}
+
+function notify(msg){
+  if (!("Notification" in window)) return;
+  if (Notification.permission === "granted") new Notification(msg);
+  else if (Notification.permission !== "denied") Notification.requestPermission().then(p=>p==="granted"&&new Notification(msg));
+}
+
+/* ---------- STATE ---------- */
+function loadState(){
+  let s = JSON.parse(localStorage.getItem('omxbot')||'{}');
+  if (!s.prices) s.prices = [];
+  return s;
+}
+function saveState(s){ localStorage.setItem('omxbot', JSON.stringify(s)); }
+
+/* ---------- TABLE UPDATE ---------- */
+function updateTable(streak,high3y,dd3y){
+  streakEl.textContent = streak;
+  high3yEl.textContent = fmt(high3y);
+  dd3yEl.textContent   = fmt(dd3y*100)+' %';
+}
+
+/* ---------- RULES ---------- */
+async function runBotOnce(){
+  const st = loadState();
+  const {open,close,closes} = await yahoo(TICKER);
+  const prices = [...st.prices, close].slice(-252);   // keep 252 for bot
+  const high252 = Math.max(...prices);
+  const sma63   = prices.slice(-63).reduce((a,b)=>a+b)/63;
+  const streak  = close < open ? (st.streak||0)+1 : 0;
+  const drawdn  = (high252 - close) / high252;
+
+  /* 3-year stats for table */
+  const high3y = Math.max(...closes);
+  const dd3y   = (high3y - close) / high3y;
+  updateTable(streak, high3y, dd3y);
+
+  let txt = `Date ${todayStr()}\nClose ${fmt(close)}  Open ${fmt(open)}\n252dHigh ${fmt(high252)}  63dSMA ${fmt(sma63)}\nStreak ${streak}  Drawdown ${fmt(drawdn*100)}%`;
+
+  /* TRIGGERS */
+  const cash = CASH();
+  if (streak===6 && cash >= BUY6){
+    ORDER(BUY6); txt += `\nBUY 200k (streak 6)`; notify("OMX-Bot: BUY 200k");
+  }else if (drawdn>=0.15 && streak<6 && cash>=BUY15){
+    ORDER(BUY15); txt += `\nBUY 100k (15% drawdown)`; notify("OMX-Bot: BUY 100k (15%)");
+  }else if (drawdn>=0.25 && cash>=BUY25){
+    ORDER(BUY25); txt += `\nBUY 100k (25% drawdown)`; notify("OMX-Bot: BUY 100k (25%)");
+  }
+
+  /* REBALANCE */
+  const equityW = 0.75; // dummy
+  if (close > sma63 && equityW > 0.75){
+    txt += `\nREBALANCE: sell down to 75 %`; notify("OMX-Bot: REBALANCE");
+  }
+
+  /* SAVE */
+  st.prices = prices;
+  st.streak = streak;
+  saveState(st);
+  log.textContent = txt;
+}
+
+/* ---------- SCHEDULER ---------- */
+function schedule(){
+  const now = new Date();
+  const [h,m] = [17,30];
+  let next = new Date();
+  next.setHours(h,m,0,0);
+  if (now > next) next.setDate(next.getDate()+1);
+  const ms = next - now;
+  log.textContent = `Next run: ${next.toLocaleString('sv-SE')}`;
+  setTimeout(()=>{
+    const day = next.getDay();
+    if (day>0 && day<6) runBotOnce();
+    schedule();
+  }, ms);
+}
+
+/* ---------- INIT ---------- */
+const streakEl = document.getElementById('streak');
+const high3yEl = document.getElementById('high3y');
+const dd3yEl   = document.getElementById('dd3y');
+if (Notification.permission === "default") Notification.requestPermission();
+runBotOnce(); // update table immediately
+schedule();
+</script>
+</body>
+</html>
